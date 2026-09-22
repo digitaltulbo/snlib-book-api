@@ -182,7 +182,7 @@ async function appendAudit(entry: HistoryAuditEntry) {
 
 export async function listHistoryAudit(child: ChildId, limit = 50) {
   const size = Number.isFinite(limit) ? Math.min(Math.max(Math.floor(limit), 1), 200) : 50;
-  const values = await redis().lrange<string[]>(auditKeyForChild(child), 0, size - 1);
+  const values = await redis().lrange<string>(auditKeyForChild(child), 0, size - 1);
   return (values ?? [])
     .map((value) => {
       try { return JSON.parse(value) as HistoryAuditEntry; } catch { return null; }
