@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>읽기 이력 관리</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f7f8fb; color: #111827; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .card { background: #fff; border-radius: 12px; padding: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.06); margin-bottom: 12px; }
+    label { display: block; font-size: 14px; margin-bottom: 6px; font-weight: 600; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .child { flex: 1; min-width: 140px; }
+    .child input { margin-right: 6px; }
+    input, textarea, button { width: 100%; box-sizing: border-box; border: 1px solid #d1d5db; border-radius: 10px; padding: 10px; font-size: 15px; }
+    textarea { min-height: 220px; resize: vertical; }
+    button { background: #111827; color: #fff; border: 0; font-weight: 700; }
+    button:disabled { opacity: .65; }
+    .hint { color: #4b5563; font-size: 13px; margin-top: 8px; }
+    .ok { color: #065f46; font-size: 14px; }
+    .err { color: #b91c1c; font-size: 14px; white-space: pre-wrap; }
+    ul { margin: 8px 0 0; padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <h1>읽기 이력 관리</h1>
+
+    <section class="card">
+      <label for="token">쓰기 인증 토큰</label>
+      <input id="token" type="password" placeholder="HISTORY_WRITE_TOKEN" autocomplete="off" />
+      <p class="hint">x-write-token 헤더로 전송됩니다.</p>
+    </section>
+
+    <section class="card">
+      <label>아이 선택</label>
+      <div class="row">
+        <label class="child"><input type="radio" name="child" value="soohyun" checked />수현</label>
+        <label class="child"><input type="radio" name="child" value="yujin" />유진</label>
+      </div>
+    </section>
+
+    <section class="card">
+      <label for="titles">책 제목 여러 줄 붙여넣기</label>
+      <textarea id="titles" placeholder="한 줄에 책 1권씩 입력하세요."></textarea>
+      <p class="hint">빈 줄은 무시하며 최대 20권까지 저장합니다.</p>
+    </section>
+
+    <button id="saveBtn" type="button">read로 일괄 저장</button>
+
+    <section id="result" class="card" hidden></section>
+  </main>
+
+  <script>
+    const saveBtn = document.getElementById("saveBtn");
+    const result = document.getElementById("result");
+
+    function selectedChild() {
+      return document.querySelector('input[name="child"]:checked')?.value || "soohyun";
+    }
+
+    function parseTitles(raw) {
+      return raw.split(/\r?\n/).map((v) => v.trim()).filter(Boolean);
+    }
+
+    function renderError(message) {
+      result.hidden = false;
+      result.innerHTML = '<div class="err"></div>';
+      result.querySelector(".err").textContent = message;
+    }
+
+    function renderOk(saved) {
+      result.hidden = false;
+      const items = saved.map((book) => `<li>${book.title}</li>`).join("");
+      result.innerHTML = `<div class="ok">저장 완료: ${saved.length}권</div><ul>${items}</ul>`;
+    }
+
+    saveBtn.addEventListener("click", async () => {
+      const token = document.getElementById("token").value.trim();
+      const titles = parseTitles(document.getElementById("titles").value);
+      if (!token) return renderError("쓰기 인증 토큰을 입력해주세요.");
+      if (!titles.length) return renderError("책 제목을 입력해주세요.");
+      if (titles.length > 20) return renderError("한 번에 최대 20권까지 저장할 수 있습니다.");
+
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
+      const books = titles.map((title) => ({
+        child: selectedChild(),
+        title,
+        status: "read",
+        dateRead: today,
+      }));
+
+      saveBtn.disabled = true;
+      saveBtn.textContent = "저장 중...";
+      try {
+        const response = await fetch("/api/history/batch", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-write-token": token,
+          },
+          body: JSON.stringify({ books }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data?.error ? `저장 실패: ${data.error}` : "저장 실패");
+        }
+        renderOk(data.books || []);
+      } catch (error) {
+        renderError(error instanceof Error ? error.message : String(error));
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = "read로 일괄 저장";
+      }
+    });
+  </script>
+</body>
+</html>

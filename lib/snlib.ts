@@ -2,8 +2,6 @@ import { load } from "cheerio";
 
 const BASE = "https://www.snlib.go.kr/intro/menu/10041/program/30009/";
 const SPECIAL_EDITION = /\[?(점자|큰글자|전자책|e-?book|dvd|비디오|오디오북|데이지)\]?/gi;
-const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000;
-const lookupCache = new Map<string, { expiresAt: number; value: BookLookup }>();
 
 export type LibraryHolding = {
   library: string;
@@ -48,10 +46,6 @@ const clean = (value = "") => value.replace(/\s+/g, " ").trim();
 const trimTitle = (value: string) => clean(value).replace(/[\s/:;,.-]+$/g, "");
 const comparableTitle = (value: string) =>
   trimTitle(value)
-    .replace(/[:\-~]\s*[^:]{1,25}$/g, "")
-    .replace(/\((?:[0-9]+|[상중하]|[가-힣]\d*)\)$/g, "")
-    .replace(/\b(?:\d+권|제?\d+권|[0-9]+편|시리즈)\b/gi, "")
-    .replace(/\b(?:part|vol(?:ume)?|book)\s*\d+\b/gi, "")
     .replace(SPECIAL_EDITION, "")
     .replace(/[\[\](){}]/g, "")
     .replace(/\s+/g, "")
@@ -90,38 +84,26 @@ function getLibraryName(location: string) {
   return names[key] ?? (key ? `${key}도서관` : "알 수 없는 도서관");
 }
 
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function fetchWithRetry(url: URL, retries = 2) {
-  let lastError: unknown = null;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    try {
-      const response = await fetch(url, {
-        headers: {
-          Accept: "text/html",
-          "User-Agent": "snlib-book-api/1.0 (public catalog lookup)",
-        },
-        signal: AbortSignal.timeout(20_000),
-      });
-      if (response.ok) return response;
-      if (response.status < 500 || attempt === retries) {
-        throw new SnlibRequestError(`SNLib returned HTTP ${response.status}`);
-      }
-      lastError = new SnlibRequestError(`SNLib returned HTTP ${response.status}`);
-    } catch (error) {
-      lastError = error;
-      if (attempt === retries) break;
-    }
-    await wait((attempt + 1) * 250);
-  }
-  throw new SnlibRequestError(`SNLib request failed: ${String(lastError)}`);
-}
-
 async function fetchHtml(path: string, params: Record<string, string>) {
   const url = new URL(path, BASE);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
 
-  const response = await fetchWithRetry(url);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        Accept: "text/html",
+        "User-Agent": "snlib-book-api/1.0 (public catalog lookup)",
+      },
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (error) {
+    throw new SnlibRequestError(`SNLib request failed: ${String(error)}`);
+  }
+
+  if (!response.ok) {
+    throw new SnlibRequestError(`SNLib returned HTTP ${response.status}`);
+  }
   return response.text();
 }
 
@@ -240,11 +222,6 @@ function parseHoldings(html: string): LibraryHolding[] {
 export async function lookupBook(rawTitle: string): Promise<BookLookup> {
   const query = clean(rawTitle);
   if (!query) return { query, found: false, error: "NO_MATCH" };
-  const cacheKey = comparableTitle(query);
-  const now = Date.now();
-  const cached = lookupCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) return cached.value;
-  if (cached) lookupCache.delete(cacheKey);
 
   const params = searchParams(query);
   const resultHtml = await fetchHtml("plusSearchResultList.do", params);
@@ -263,11 +240,7 @@ export async function lookupBook(rawTitle: string): Promise<BookLookup> {
       if (selected?.score === 0) break;
     }
   }
-  if (!selected) {
-    const noMatch: BookLookup = { query, found: false, error: "NO_MATCH" };
-    lookupCache.set(cacheKey, { value: noMatch, expiresAt: now + LOOKUP_CACHE_TTL_MS });
-    return noMatch;
-  }
+  if (!selected) return { query, found: false, error: "NO_MATCH" };
 
   const detailHtml = await fetchHtml("plusSearchResultDetail.do", {
     ...params,
@@ -290,7 +263,7 @@ export async function lookupBook(rawTitle: string): Promise<BookLookup> {
     interlibraryCandidates[0] ??
     null;
 
-  const output: BookLookup = {
+  return {
     query,
     found: true,
     matchedTitle: heading,
@@ -307,8 +280,6 @@ export async function lookupBook(rawTitle: string): Promise<BookLookup> {
       pickupEligibility: "verify_at_application",
     },
   };
-  lookupCache.set(cacheKey, { value: output, expiresAt: now + LOOKUP_CACHE_TTL_MS });
-  return output;
 }
 
 export async function mapWithConcurrency<T, R>(

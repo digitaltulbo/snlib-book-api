@@ -1,7 +1,13 @@
 import type { ChildId, HistoryStatus } from "../lib/history.js";
 import { CHILDREN, CHILD_PROFILES, STATUSES, deleteHistory, listHistory, upsertHistory, validateInput } from "../lib/history.js";
+import { verifyWriteAuth } from "../lib/write-auth.js";
 
-type Req = { method?: string; query: Record<string, string | string[] | undefined>; body?: unknown };
+type Req = {
+  method?: string;
+  query: Record<string, string | string[] | undefined>;
+  body?: unknown;
+  headers?: Record<string, string | string[] | undefined>;
+};
 type Res = { status: (code: number) => Res; json: (body: unknown) => unknown; setHeader: (name: string, value: string) => void };
 const one = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
 
@@ -16,10 +22,14 @@ export default async function handler(req: Req, res: Res) {
       return res.status(200).json({ child, profile: CHILD_PROFILES[child], books: await listHistory(child, status) });
     }
     if (req.method === "POST") {
+      const auth = verifyWriteAuth(req.headers);
+      if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
       const book = await upsertHistory(validateInput(req.body));
       return res.status(200).json({ book });
     }
     if (req.method === "DELETE") {
+      const auth = verifyWriteAuth(req.headers);
+      if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
       const child = one(req.query.child) as ChildId;
       const title = one(req.query.title) ?? "";
       if (!CHILDREN.includes(child)) return res.status(400).json({ error: "INVALID_CHILD" });

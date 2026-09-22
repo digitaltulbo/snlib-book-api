@@ -1,11 +1,18 @@
 import { upsertHistoryBatch, validateInput } from "../../lib/history.js";
+import { verifyWriteAuth } from "../../lib/write-auth.js";
 
-type Req = { method?: string; body?: unknown };
+type Req = {
+  method?: string;
+  body?: unknown;
+  headers?: Record<string, string | string[] | undefined>;
+};
 type Res = { status: (code: number) => Res; json: (body: unknown) => unknown; setHeader: (name: string, value: string) => void };
 
 export default async function handler(req: Req, res: Res) {
   res.setHeader("Cache-Control", "no-store");
   if (req.method !== "POST") return res.status(405).json({ error: "METHOD_NOT_ALLOWED" });
+  const auth = verifyWriteAuth(req.headers);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
   try {
     const values = (req.body as { books?: unknown } | undefined)?.books;
     if (!Array.isArray(values)) return res.status(400).json({ error: "BOOKS_ARRAY_REQUIRED" });
