@@ -1,5 +1,5 @@
 import type { ChildId, HistoryStatus } from "../lib/history.js";
-import { CHILDREN, STATUSES, deleteHistory, listHistory, upsertHistory, validateInput } from "../lib/history.js";
+import { CHILDREN, CHILD_PROFILES, STATUSES, deleteHistory, listHistory, upsertHistory, validateInput } from "../lib/history.js";
 
 type Req = { method?: string; query: Record<string, string | string[] | undefined>; body?: unknown };
 type Res = { status: (code: number) => Res; json: (body: unknown) => unknown; setHeader: (name: string, value: string) => void };
@@ -13,7 +13,7 @@ export default async function handler(req: Req, res: Res) {
       const status = one(req.query.status) as HistoryStatus | undefined;
       if (!CHILDREN.includes(child)) return res.status(400).json({ error: "INVALID_CHILD" });
       if (status && !STATUSES.includes(status)) return res.status(400).json({ error: "INVALID_STATUS" });
-      return res.status(200).json({ child, books: await listHistory(child, status) });
+      return res.status(200).json({ child, profile: CHILD_PROFILES[child], books: await listHistory(child, status) });
     }
     if (req.method === "POST") {
       const book = await upsertHistory(validateInput(req.body));

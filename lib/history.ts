@@ -2,6 +2,10 @@ import { Redis } from "@upstash/redis";
 import { lookupBook, mapWithConcurrency } from "./snlib.js";
 
 export const CHILDREN = ["soohyun", "yujin"] as const;
+export const CHILD_PROFILES = {
+  soohyun: { id: "soohyun", name: "수현", birthDate: "2022-03-21" },
+  yujin: { id: "yujin", name: "유진", birthMonth: "2024-10" },
+} as const;
 export const STATUSES = ["read", "recommended", "favorite", "skip"] as const;
 export const REACTIONS = ["love", "good", "neutral", "not_interested"] as const;
 
