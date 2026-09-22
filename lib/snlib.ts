@@ -132,6 +132,7 @@ type SearchCandidate = {
 function selectCandidate(html: string, query: string): {
   candidate: SearchCandidate;
   confidence: FoundBook["matchConfidence"];
+  score: number;
 } | null {
   const $ = load(html);
   const items = $(".resultList.imageType > li").length
@@ -174,7 +175,7 @@ function selectCandidate(html: string, query: string): {
     .sort((a, b) => a.score - b.score);
 
   return scored.length
-    ? { candidate: scored[0].candidate, confidence: scored[0].confidence }
+    ? { candidate: scored[0].candidate, confidence: scored[0].confidence, score: scored[0].score }
     : null;
 }
 
@@ -224,7 +225,21 @@ export async function lookupBook(rawTitle: string): Promise<BookLookup> {
 
   const params = searchParams(query);
   const resultHtml = await fetchHtml("plusSearchResultList.do", params);
-  const selected = selectCandidate(resultHtml, query);
+  let selected = selectCandidate(resultHtml, query);
+
+  // TITLE 정렬 결과에서 특수판이 일반판보다 먼저 나오는 경우가 있어,
+  // 완전 일치 일반판을 찾을 때까지만 추가 페이지를 제한적으로 확인한다.
+  if (!selected || selected.score > 0) {
+    for (let page = 2; page <= 4; page += 1) {
+      const nextHtml = await fetchHtml("plusSearchResultList.do", {
+        ...params,
+        currentPageNo: String(page),
+      });
+      const next = selectCandidate(nextHtml, query);
+      if (next && (!selected || next.score < selected.score)) selected = next;
+      if (selected?.score === 0) break;
+    }
+  }
   if (!selected) return { query, found: false, error: "NO_MATCH" };
 
   const detailHtml = await fetchHtml("plusSearchResultDetail.do", {
