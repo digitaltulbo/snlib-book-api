@@ -1,0 +1,16 @@
+{
+  "name": "snlib-book-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build:test": "tsc --noEmit false --outDir .build"
+  },
+  "dependencies": {
+    "cheerio": "^1.1.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
