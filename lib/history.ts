@@ -39,6 +39,39 @@ export type HistoryInput = {
   notes?: string | null;
 };
 
+export type HistoryAuditEntry = {
+  child: ChildId;
+  action: "create" | "update" | "delete";
+  at: string;
+  key: string;
+  before: HistoryBook | null;
+  after: HistoryBook | null;
+};
+
+export type HistoryRecommendation = {
+  title: string;
+  exclude: boolean;
+  reason: string | null;
+  matched: HistoryBook | null;
+};
+
+export type HistoryStats = {
+  child: ChildId;
+  total: number;
+  statusCounts: Record<HistoryStatus, number>;
+  monthlyStatusCounts: Record<string, Record<HistoryStatus, number>>;
+  reactionCounts: Record<Reaction | "none", number>;
+};
+
+export type HistoryAlert = {
+  child: ChildId;
+  title: string;
+  type: "recommended_window_elapsed" | "skip_window_elapsed";
+  dueDate: string;
+  daysOverdue: number;
+  book: HistoryBook;
+};
+
 function redis() {
   const url = process.env.HISTORY_KV_REST_API_URL;
   const token = process.env.HISTORY_KV_REST_API_TOKEN;
@@ -47,11 +80,16 @@ function redis() {
 }
 
 const keyForChild = (child: ChildId) => `snlib:history:${child}`;
+const auditKeyForChild = (child: ChildId) => `snlib:history:audit:${child}`;
 
 export function normalizeTitle(value: string) {
   return value
     .normalize("NFKC")
     .toLocaleLowerCase("ko-KR")
+    .replace(/[:\-~]\s*[^:]{1,25}$/g, "")
+    .replace(/\((?:[0-9]+|[상중하]|[가-힣]\d*)\)$/g, "")
+    .replace(/\b(?:\d+권|제?\d+권|[0-9]+편|시리즈)\b/gi, "")
+    .replace(/\b(?:part|vol(?:ume)?|book)\s*\d+\b/gi, "")
     .replace(/\[?(점자|큰글자|전자책|e-?book|dvd|오디오북|데이지)\]?/gi, "")
     .replace(/[\s\p{P}\p{S}]/gu, "");
 }
@@ -68,6 +106,10 @@ function recordKey(book: Pick<HistoryBook, "isbn" | "title" | "author">) {
   return `title:${normalizeTitle(book.title)}:${normalizeAuthor(book.author)}`;
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
 export function todaySeoul() {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Seoul",
@@ -75,6 +117,12 @@ export function todaySeoul() {
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
+}
+
+function daysBetween(from: string, to: string) {
+  const start = Date.parse(`${from}T00:00:00Z`);
+  const end = Date.parse(`${to}T00:00:00Z`);
+  return Math.floor((end - start) / 86_400_000);
 }
 
 function isDate(value: unknown): value is string {
@@ -126,6 +174,22 @@ export async function listHistory(child: ChildId, status?: HistoryStatus) {
   return books;
 }
 
+async function appendAudit(entry: HistoryAuditEntry) {
+  const client = redis();
+  await client.lpush(auditKeyForChild(entry.child), JSON.stringify(entry));
+  await client.ltrim(auditKeyForChild(entry.child), 0, 199);
+}
+
+export async function listHistoryAudit(child: ChildId, limit = 50) {
+  const size = Number.isFinite(limit) ? Math.min(Math.max(Math.floor(limit), 1), 200) : 50;
+  const values = await redis().lrange<string[]>(auditKeyForChild(child), 0, size - 1);
+  return (values ?? [])
+    .map((value) => {
+      try { return JSON.parse(value) as HistoryAuditEntry; } catch { return null; }
+    })
+    .filter((value): value is HistoryAuditEntry => Boolean(value));
+}
+
 async function enrich(input: HistoryInput) {
   if (input.isbn && input.author) return input;
   const lookup = await lookupBook(input.title);
@@ -164,6 +228,14 @@ export async function upsertHistory(rawInput: HistoryInput) {
   const client = redis();
   await client.hset(keyForChild(book.child), { [newField]: JSON.stringify(book) });
   if (oldField && oldField !== newField) await client.hdel(keyForChild(book.child), oldField);
+  await appendAudit({
+    child: book.child,
+    action: existing ? "update" : "create",
+    at: nowIso(),
+    key: newField,
+    before: existing ?? null,
+    after: book,
+  });
   return book;
 }
 
@@ -177,6 +249,14 @@ export async function deleteHistory(child: ChildId, title: string) {
   const matches = books.filter((book) => normalizeTitle(book.title) === normalized);
   if (!matches.length) return 0;
   await redis().hdel(keyForChild(child), ...matches.map(recordKey));
+  await Promise.all(matches.map((book) => appendAudit({
+    child,
+    action: "delete",
+    at: nowIso(),
+    key: recordKey(book),
+    before: book,
+    after: null,
+  })));
   return matches.length;
 }
 
@@ -216,4 +296,107 @@ export async function checkHistory(child: ChildId, titles: string[]) {
     const reason = book ? exclusionReason(book) : null;
     return { title, exclude: Boolean(reason), reason };
   });
+}
+
+export async function suggestHistory(child: ChildId, titles: string[]) {
+  const books = await listHistory(child);
+  const normalizedMap = new Map(books.map((book) => [normalizeTitle(book.title), book]));
+  const results: HistoryRecommendation[] = titles.map((title) => {
+    const matched = normalizedMap.get(normalizeTitle(title)) ?? null;
+    const reason = matched ? exclusionReason(matched) : null;
+    return { title, exclude: Boolean(reason), reason, matched };
+  });
+  return {
+    child,
+    eligible: results.filter((item) => !item.exclude),
+    excluded: results.filter((item) => item.exclude),
+    results,
+  };
+}
+
+export async function historyStats(child: ChildId): Promise<HistoryStats> {
+  const books = await listHistory(child);
+  const emptyStatusCounts: Record<HistoryStatus, number> = {
+    read: 0,
+    recommended: 0,
+    favorite: 0,
+    skip: 0,
+  };
+  const reactionCounts: Record<Reaction | "none", number> = {
+    love: 0,
+    good: 0,
+    neutral: 0,
+    not_interested: 0,
+    none: 0,
+  };
+  const monthlyStatusCounts: Record<string, Record<HistoryStatus, number>> = {};
+
+  for (const book of books) {
+    emptyStatusCounts[book.status] += 1;
+    reactionCounts[book.reaction ?? "none"] += 1;
+    const month = book.dateAdded.slice(0, 7);
+    if (!monthlyStatusCounts[month]) {
+      monthlyStatusCounts[month] = { read: 0, recommended: 0, favorite: 0, skip: 0 };
+    }
+    monthlyStatusCounts[month][book.status] += 1;
+  }
+
+  return {
+    child,
+    total: books.length,
+    statusCounts: emptyStatusCounts,
+    monthlyStatusCounts,
+    reactionCounts,
+  };
+}
+
+export async function rerecommendAlerts(child: ChildId, today = todaySeoul()) {
+  const books = await listHistory(child);
+  const alerts: HistoryAlert[] = [];
+  for (const book of books) {
+    if (book.status === "recommended") {
+      const dueDate = plusDays(book.dateAdded, 56);
+      if (today > dueDate) {
+        alerts.push({
+          child,
+          title: book.title,
+          type: "recommended_window_elapsed",
+          dueDate,
+          daysOverdue: daysBetween(dueDate, today),
+          book,
+        });
+      }
+      continue;
+    }
+    if (book.status === "skip") {
+      const dueDate = book.excludeUntil ?? plusMonths(book.dateAdded, 6);
+      if (today > dueDate) {
+        alerts.push({
+          child,
+          title: book.title,
+          type: "skip_window_elapsed",
+          dueDate,
+          daysOverdue: daysBetween(dueDate, today),
+          book,
+        });
+      }
+    }
+  }
+  return alerts.sort((a, b) => b.daysOverdue - a.daysOverdue || a.title.localeCompare(b.title, "ko"));
+}
+
+export async function favoriteQueue(child: ChildId) {
+  const books = await listHistory(child, "favorite");
+  const reactionRank: Record<Reaction | "none", number> = {
+    love: 0,
+    good: 1,
+    neutral: 2,
+    not_interested: 3,
+    none: 4,
+  };
+  return books.sort((a, b) =>
+    (reactionRank[a.reaction ?? "none"] - reactionRank[b.reaction ?? "none"]) ||
+    a.dateAdded.localeCompare(b.dateAdded) ||
+    a.title.localeCompare(b.title, "ko"),
+  );
 }
