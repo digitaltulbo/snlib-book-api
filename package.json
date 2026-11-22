@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit",
-    "build:test": "tsc --noEmit false --outDir .build"
+    "build:test": "tsc --noEmit false --outDir .build",
+    "test:loan-history": "tsc --noEmit false --outDir .build && node --test .build/scripts/loan-history.test.js"
   },
   "dependencies": {
     "@upstash/redis": "^1.39.0",
