@@ -1,0 +1,25 @@
+name: Loan history validation
+on:
+  pull_request:
+    paths:
+      - 'api/loan-history.ts'
+      - 'lib/loan-history.ts'
+      - 'scripts/loan-history.test.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/loan-history.yml'
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:loan-history
